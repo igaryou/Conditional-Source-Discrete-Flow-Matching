@@ -1,0 +1,24 @@
+experiment: {name: ccdm_conditioned, seed: 42, output_dir: outputs/ccdm_conditioned}
+dataset:
+  name: cityscapes
+  root: /home/igarashi_25/datasets/cityscapes
+  pipeline: ccdm_fixed
+  image_size_hw: [256, 512]
+  num_classes: 20
+  void_class_index: 19
+  eval_num_classes: 19
+  loss_ignore_index: -100
+  label_mapping_version: cityscapes_raw_to_19_plus_void_v1
+  augmentation: {random_resize: false, random_crop: false, horizontal_flip: 0.0, photometric: false}
+source: {architecture: segformer, variant: b2, initialization: random, checkpoint: outputs/source_ccdm/best.pt}
+source_cache: {enabled: true, root: cache/source_b2, dtype: float16, batch_size: 4, overwrite: false, verify: true}
+source_distribution: {type: image_conditioned, lambda: 0.2, temperature: 2.0, sampling: categorical}
+flow: {path: {type: two_term, scheduler: linear, power: 1.0, uniform_strength: 0.0}}
+model: {base_channels: 64, channel_mults: [1, 2, 4], num_res_blocks: 2, time_dim: 128, mask_embed_dim: 64}
+training: {stage: dfm, runner: epoch, epochs: 800, batch_size: 4, lr: 0.00005, weight_decay: 0.001, grad_clip: 1.0, resume: null}
+scheduler: {type: cosine, eta_min: 0.000001, warmup: {enabled: false}}
+validation: {best_metric: generative_mIoU, conditional_interval: 1, generative_interval: 5, generative_steps: 20, generative_seed: 42, num_source_samples: 1, argmax_final: false}
+evaluation: {generative_steps: 50, seed: 42, num_source_samples: 1, argmax_final: false}
+runtime: {num_workers: 4, pin_memory: true, amp: true, amp_dtype: bf16}
+distributed: {enabled: auto, backend: nccl}
+

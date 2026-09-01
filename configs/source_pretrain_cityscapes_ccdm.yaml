@@ -1,0 +1,20 @@
+experiment: {name: source_ccdm, seed: 42, output_dir: outputs/source_ccdm}
+dataset:
+  name: cityscapes
+  root: /home/igarashi_25/datasets/cityscapes
+  pipeline: ccdm_fixed
+  image_size_hw: [256, 512]
+  num_classes: 20
+  void_class_index: 19
+  eval_num_classes: 19
+  loss_ignore_index: -100
+  augmentation: {random_resize: false, random_crop: false, horizontal_flip: 0.0, photometric: false}
+source: {architecture: segformer, variant: b2, initialization: mit_imagenet, checkpoint: outputs/source_ccdm/best.pt}
+source_distribution: {type: image_conditioned, lambda: 0.2, temperature: 1.0, sampling: categorical}
+source_cache: {enabled: false}
+flow: {path: {type: two_term, scheduler: linear}}
+training: {stage: source_pretrain, runner: epoch, epochs: 80, batch_size: 4, lr: 0.00006, weight_decay: 0.01, grad_clip: 1.0, val_interval: 1, resume: null}
+scheduler: {type: cosine, eta_min: 0.000001, warmup: {enabled: false}}
+runtime: {num_workers: 4, pin_memory: true, amp: true, amp_dtype: bf16}
+distributed: {enabled: auto, backend: nccl}
+

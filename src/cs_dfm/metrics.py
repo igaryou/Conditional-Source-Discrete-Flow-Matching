@@ -5,8 +5,9 @@ import torch.distributed as dist
 
 
 class SegmentationMetrics:
-    def __init__(self, num_classes: int, ignore_index: int = -100):
+    def __init__(self, num_classes: int, ignore_index: int = -100, eval_num_classes: int | None = None):
         self.num_classes, self.ignore_index = num_classes, ignore_index
+        self.eval_num_classes = eval_num_classes or num_classes
         self.confusion = torch.zeros(num_classes, num_classes, dtype=torch.int64)
 
     @torch.no_grad()
@@ -25,8 +26,7 @@ class SegmentationMetrics:
     def compute(self) -> dict:
         c = self.confusion.float(); tp = c.diag(); union = c.sum(0) + c.sum(1) - tp
         iou = tp / union.clamp_min(1)
-        valid = union > 0
+        valid = (union > 0) & (torch.arange(self.num_classes) < self.eval_num_classes)
         return {"pixel_accuracy": float(tp.sum() / c.sum().clamp_min(1)),
                 "mIoU": float(iou[valid].mean()) if valid.any() else 0.0,
                 "class_IoU": [float(x) for x in iou], "confusion_matrix": self.confusion.tolist()}
-
