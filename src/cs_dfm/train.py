@@ -173,7 +173,9 @@ def train_dfm(cfg):
             log={"progress":unit,"train_loss":sum(losses)/len(losses),"conditional":cond,"generative":gen};print(json.dumps(log))
             extra={"best_conditional":best_c,"best_generative":best_g,"validation":log}
             update_c,update_g=checkpoint_decisions(cond,gen,best_c,best_g)
-            if update_c:best_c=cond["mIoU"];extra["best_conditional"]=best_c;save_checkpoint(out/"best_conditional.pt",model,optimizer,scheduler,scaler,progress,best_c,cfg,extra)
+            if update_c:
+                best_c=cond["mIoU"];extra["best_conditional"]=best_c;save_checkpoint(out/"best_conditional.pt",model,optimizer,scheduler,scaler,progress,best_c,cfg,extra)
+                if v.get("best_metric","generative_mIoU")=="conditional_mIoU":save_checkpoint(out/"best.pt",model,optimizer,scheduler,scaler,progress,best_c,cfg,extra)
             if update_g:
                 best_g=gen["mIoU"];extra["best_generative"]=best_g;save_checkpoint(out/"best_generative.pt",model,optimizer,scheduler,scaler,progress,best_g,cfg,extra)
                 if v.get("best_metric","generative_mIoU")=="generative_mIoU":save_checkpoint(out/"best.pt",model,optimizer,scheduler,scaler,progress,best_g,cfg,extra)

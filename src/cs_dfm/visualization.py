@@ -57,16 +57,23 @@ def visualize_source(cfg: dict, index: int, lambdas: list[float], temperatures: 
 
 @torch.no_grad()
 def source_diagnostics(cfg: dict, lambdas: list[float], temperatures: list[float], out_dir: str, max_samples=None):
-    dataset = build_dataset(cfg, "val", return_logits=True, augment=False)
+    conditioned = cfg["source_distribution"]["type"] == "image_conditioned"
+    dataset = build_dataset(cfg, "val", return_logits=conditioned, augment=False)
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
-    k = int(cfg["dataset"]["num_classes"]); accum = {(l, t): {"pixels": 0, "gt": 0, "mu": 0, "changed": 0,
+    k = int(cfg["dataset"]["num_classes"]); pairs = [(l,t) for t in temperatures for l in lambdas] if conditioned else [(0.,1.)]
+    accum = {(l, t): {"pixels": 0, "gt": 0, "mu": 0, "changed": 0,
         "entropy": 0., "confidence": 0., "z_hist": torch.zeros(k), "gt_hist": torch.zeros(k), "mu_hist": torch.zeros(k),
-        "class_correct": torch.zeros(k), "class_total": torch.zeros(k)} for t in temperatures for l in lambdas}
+        "class_correct": torch.zeros(k), "class_total": torch.zeros(k)} for l,t in pairs}
     for n, batch in enumerate(tqdm(loader, desc="source diagnostics")):
         if max_samples is not None and n >= max_samples: break
-        logits, gt = batch["source_logits"].float(), batch["mask"]; mu = logits.argmax(1)
+        gt = batch["mask"]
+        if conditioned:
+            logits = batch["source_logits"].float(); mu = logits.argmax(1)
+        else:
+            logits = torch.zeros(1, k, *gt.shape[-2:]); mu = torch.zeros_like(gt)
         for (lam, temp), a in accum.items():
-            p = construct_source_probabilities(logits, lam, temp); z = sample_categorical(p)
+            p = construct_source_probabilities(logits, lam, temp) if conditioned else torch.full_like(logits, 1/k)
+            z = sample_categorical(p)
             pixels = z.numel(); a["pixels"] += pixels; a["gt"] += int((z == gt).sum()); a["mu"] += int((z == mu).sum())
             a["changed"] += int((z != mu).sum()); a["entropy"] += float(_entropy(p[0]).sum()); a["confidence"] += float(p.max(1).values.sum())
             a["z_hist"] += torch.bincount(z.flatten(), minlength=k); a["gt_hist"] += torch.bincount(gt.flatten(), minlength=k)
@@ -76,11 +83,13 @@ def source_diagnostics(cfg: dict, lambdas: list[float], temperatures: list[float
     rows = []
     for (lam, temp), a in accum.items():
         denom = max(a["pixels"], 1)
-        rows.append({"lambda": lam, "temperature": temp, "z0_gt_acc": a["gt"] / denom,
-                     "z0_mu_agreement": a["mu"] / denom, "changed_ratio": a["changed"] / denom,
+        rows.append({"source_type": cfg["source_distribution"]["type"], "lambda": lam if conditioned else None,
+                     "temperature": temp if conditioned else None, "z0_gt_acc": a["gt"] / denom,
+                     "z0_mu_agreement": a["mu"] / denom if conditioned else None,
+                     "changed_ratio": a["changed"] / denom if conditioned else None,
                      "mean_entropy": a["entropy"] / denom, "mean_max_confidence": a["confidence"] / denom,
                      "z0_class_histogram": a["z_hist"].tolist(), "gt_class_histogram": a["gt_hist"].tolist(),
-                     "mu_class_histogram": a["mu_hist"].tolist(),
+                     "mu_class_histogram": a["mu_hist"].tolist() if conditioned else None,
                      "per_class_source_accuracy": (a["class_correct"] / a["class_total"].clamp_min(1)).tolist(),
                      "per_class_sampled_frequency": (a["z_hist"] / max(a["z_hist"].sum(), 1)).tolist()})
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
@@ -111,4 +120,3 @@ def visualize_paths(path_configs: list[dict], num_classes: int, out_dir: str, z0
             f2.tight_layout(); f2.savefig(pdir / "zt_grid.png", dpi=150); plt.close(f2)
     ax.set(xlabel="t", ylabel="mixture weight", ylim=(-.02, 1.02)); ax.grid(True); ax.legend(fontsize=8)
     fig.tight_layout(); fig.savefig(out / "schedulers.png", dpi=150); plt.close(fig)
-

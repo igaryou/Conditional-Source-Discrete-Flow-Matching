@@ -13,7 +13,8 @@ class SegmentationMetrics:
     @torch.no_grad()
     def update(self, pred: torch.Tensor, target: torch.Tensor):
         pred, target = pred.flatten().cpu(), target.flatten().cpu()
-        valid = (target != self.ignore_index) & (target >= 0) & (target < self.num_classes)
+        valid = ((target != self.ignore_index) & (target >= 0) & (target < self.num_classes)
+                 & (target < self.eval_num_classes))
         ids = target[valid] * self.num_classes + pred[valid]
         self.confusion += torch.bincount(ids, minlength=self.num_classes ** 2).reshape(self.num_classes, -1)
 

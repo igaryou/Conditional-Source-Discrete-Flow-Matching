@@ -2,7 +2,7 @@ import torch
 
 from cs_dfm.flow.paths import build_path
 from cs_dfm.flow.schedulers import LinearScheduler, PowerScheduler, PowerUniformBumpScheduler
-from cs_dfm.flow.inference import sample_two_term
+from cs_dfm.flow.inference import sample_two_term, sample_three_term
 
 
 def test_linear_endpoints_and_power_one():
@@ -37,3 +37,12 @@ def test_two_term_inference_smoke():
     result=sample_two_term(Model(),image,z0,LinearScheduler(),3,num_steps=3,
                            generator=torch.Generator().manual_seed(1))
     assert result.shape == z0.shape and result.min() >= 0 and result.max() < 3
+
+
+def test_three_term_inference_smoke():
+    class Model(torch.nn.Module):
+        def forward(self,image,zt,t): return torch.zeros(image.shape[0],3,*image.shape[-2:])
+    image=torch.randn(1,3,4,5);z0=torch.zeros(1,4,5,dtype=torch.long);source=torch.full((1,3,4,5),1/3)
+    path=build_path({"type":"three_term","scheduler":"power_uniform_bump","power":2,"uniform_strength":.3},3)
+    result=sample_three_term(Model(),image,z0,path.scheduler,3,3,False,torch.Generator().manual_seed(2),source)
+    assert result.shape==z0.shape and result.min()>=0 and result.max()<3
