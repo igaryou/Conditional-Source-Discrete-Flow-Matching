@@ -1,0 +1,21 @@
+[project]
+name = "cs-dfm"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "matplotlib>=3.10",
+  "numpy>=2.0",
+  "PyYAML>=6.0",
+  "torch>=2.6",
+  "torchvision>=0.21",
+  "tqdm>=4.67",
+  "transformers>=4.50",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+

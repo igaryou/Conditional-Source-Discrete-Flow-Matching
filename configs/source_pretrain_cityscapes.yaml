@@ -1,0 +1,53 @@
+experiment:
+  name: source_segformer_b2_cityscapes
+  seed: 42
+  output_dir: outputs/source_b2
+dataset:
+  name: cityscapes
+  root: /home/igarashi_25/datasets/cityscapes
+  image_size: [128, 256]
+  num_classes: 20
+  ignore_index: -100
+  augmentation:
+    crop_size: [128, 256]
+    scale: [0.75, 1.5]
+    horizontal_flip: 0.5
+    photometric: false
+source:
+  architecture: segformer
+  variant: b2
+  num_classes: 20
+  pretrained: true
+  checkpoint: outputs/source_b2/best.pt
+source_cache:
+  enabled: false
+  root: cache/source_b2
+  dtype: float16
+  batch_size: 4
+  overwrite: false
+  verify: true
+source_distribution:
+  type: image_conditioned
+  lambda: 0.2
+  temperature: 1.0
+  sampling: categorical
+flow:
+  path: {type: two_term, scheduler: linear, power: 1.0}
+training:
+  stage: source_pretrain
+  epochs: 80
+  batch_size: 4
+  lr: 0.00006
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eta_min: 0.000001
+  resume: null
+runtime:
+  num_workers: 4
+  pin_memory: true
+  amp: true
+  amp_dtype: bf16
+distributed:
+  enabled: auto
+  backend: nccl
+
