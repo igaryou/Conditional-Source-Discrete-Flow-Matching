@@ -50,7 +50,7 @@ def _crop_position(mask, crop_size, cat_max_ratio, ignore_class, max_attempts):
 
 
 class SegmentationTransform:
-    """Config-driven CCDM or MMSeg-style transform shared by image/mask/cached logits."""
+    """Config-driven transform; logits are geometrically transformed only for cache runtime."""
 
     def __init__(self, cfg: dict, split: str, conditioned: bool):
         self.cfg, self.split, self.conditioned = cfg, split, conditioned
@@ -125,7 +125,8 @@ class Cityscapes20(Dataset):
         image, target = self.ds[idx]
         image = TF.pil_to_tensor(image).float()/255
         mask = torch.from_numpy(ID_TO_20CLASS[np.asarray(target,dtype=np.uint8)]).long()
-        image, mask, _ = _resize(image, mask, None, self.canonical_size)
+        if self.cfg["dataset"].get("pipeline", "ccdm_fixed") == "ccdm_fixed":
+            image, mask, _ = _resize(image, mask, None, self.canonical_size)
         sid = self.sample_id(idx); logits = None
         if self.return_logits:
             path = self.cache_root/self.split/f"{sid}.pt"
@@ -141,4 +142,3 @@ class Cityscapes20(Dataset):
 
 def build_dataset(cfg: dict, split: str, return_logits: bool = False, augment: bool = False) -> Cityscapes20:
     return Cityscapes20(cfg, split, return_logits, augment)
-

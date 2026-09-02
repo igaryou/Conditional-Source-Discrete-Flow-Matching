@@ -31,6 +31,8 @@ source_distribution:
   lambda: 0.2
   temperature: 2.0
   sampling: categorical
+source_runtime:
+  mode: cache
 flow:
   path:
     type: two_term
@@ -60,4 +62,7 @@ runtime:
 distributed:
   enabled: auto
   backend: nccl
-
+validation:
+  generative_steps: 20
+evaluation:
+  generative_steps: 20

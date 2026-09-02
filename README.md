@@ -3,7 +3,7 @@
 This repository implements two explicitly separated stages for Cityscapes semantic segmentation:
 
 1. pretrain a SegFormer source model `μ(x)` with ordinary pixel-wise cross entropy;
-2. freeze it permanently, cache its **logits**, and train the DFM model without loading or forwarding SegFormer.
+2. freeze it permanently and train the DFM from either cached logits (CCDM) or an online frozen-source forward after augmentation (MMSeg).
 
 The reference implementation inspected at `playground_2/DSDFM/dfm` samples a uniform categorical `z0`, uses a linear two-term mixture path, and trains `p(z1 | zt, x, t)` with pixel-wise CE. CS-DFM preserves that objective and changes the source/path construction in modular code.
 
@@ -25,9 +25,9 @@ Implementation: `src/cs_dfm/flow/sampling.py`.
 
 Stage 1 uses `SegformerModel.from_pretrained("nvidia/mit-b0" ... "nvidia/mit-b5")` for the ImageNet-pretrained MiT backbone only. A fresh `SegformerForSemanticSegmentation` decode/classification head is created for Cityscapes. ADE20K-finetuned segmentation checkpoints are never loaded. Set `source.initialization: random` for fully random initialization; legacy `pretrained` is still interpreted when `initialization` is absent.
 
-## Dataset and cache/augmentation alignment
+## Dataset and Stage 2 source runtime
 
-The Cityscapes mapping intentionally matches the existing DFM code: the standard 19 semantic classes map to IDs 0–18 and all void IDs map to class 19. Images, masks, and cached logits first use the same deterministic canonical `[H,W]` resize. The cache stores one `<city>__<image_stem>.pt` per sample:
+The Cityscapes mapping intentionally matches the existing DFM code: the standard 19 semantic classes map to IDs 0–18 and all void IDs map to class 19. For CCDM, images, masks, and cached logits use the same deterministic canonical `[H,W]` resize. The cache stores one `<city>__<image_stem>.pt` per sample:
 
 ```text
 cache/source_b2/<fingerprint>/
@@ -39,14 +39,20 @@ cache/source_b2/<fingerprint>/
 
 The fingerprint hashes checkpoint SHA-256, architecture/variant, class count, dataset, label-mapping version, canonical preprocessing/resize, and source output resolution. A changed checkpoint or preprocessing therefore selects a different directory and cannot inherit stale `.pt` files. Verification checks the fingerprint/spec, every expected sample ID, count, shape, dtype, and preprocessing before Stage 2 starts.
 
-During Stage 2, geometry is sampled once and applied to image, GT, and logits. Mask interpolation is nearest-neighbor; image/logit interpolation is bilinear. Note that `Transform(μ(x)) != μ(Transform(x))` exactly; applying the same geometry to cached logits is the explicit compute-saving approximation. Photometric augmentation is rejected only for image-conditioned cached-logit Stage 2; the uniform baseline may enable it.
+The source distribution and the mechanism used to obtain its logits are configured independently with `source_distribution.type` and `source_runtime.mode`.
+
+- CCDM image-conditioned runs use `source_runtime.mode: cache`. Fixed-resolution images are forwarded through SegFormer in the cache-creation stage; Stage 2 loads the fingerprinted logits and performs no SegFormer construction or forward.
+- MMSeg image-conditioned runs use `source_runtime.mode: online`. The Dataset returns only the augmented image and GT after RandomResize, RandomCrop, and RandomFlip. Stage 2 then forwards that augmented image through a checkpoint-loaded source model under `eval()`, `requires_grad_(False)`, AMP, and `torch.inference_mode()`.
+- Uniform runs use `source_runtime.mode: none`; neither SegFormer, a source checkpoint, nor a cache is used for either dataset pipeline.
+
+MMSeg deliberately uses `μ(Transform(x))`, because in general `Transform(μ(x)) != μ(Transform(x))`. This is why online source inference, rather than geometrically transforming cached logits, is the standard MMSeg protocol. The frozen source model is not added to the optimizer or DDP; each rank owns one local frozen copy while only the DFM is DDP-wrapped.
 
 Two protocols are explicit in YAML and all sizes use `[H,W]` order:
 
 - `ccdm_fixed`: deterministic fixed-resolution resize by default, optional resize/crop/flip, epoch runner.
-- `mmseg`: canonical pre-augmentation cache, RandomResize, RandomCrop with `cat_max_ratio`, RandomFlip, optional photometric transform, and epoch or iteration runner.
+- `mmseg`: original image followed by RandomResize, RandomCrop with `cat_max_ratio`, RandomFlip, optional photometric transform, and epoch or iteration runner.
 
-The label policy remains 19 foreground classes plus void class 19. `eval_num_classes` can exclude void from metrics without changing training labels.
+The label policy remains 19 foreground classes plus void class 19. `void_class_index`, `eval_num_classes`, and `loss_ignore_index` have independent meanings: the standard `loss_ignore_index: -100` trains void class 19, while setting it to 19 excludes void only from cross entropy.
 
 Implementation: `src/cs_dfm/data.py` and `src/cs_dfm/cache.py`.
 
@@ -86,7 +92,7 @@ uv run torchrun --standalone --nproc_per_node=2 src/train_source.py \
 
 Checkpoints contain model, optimizer, cosine scheduler, AMP scaler, epoch, best metric, and full config. Set `training.resume` to `last.pt` to resume. `best.pt` is selected by validation mIoU. Validation also reports pixel accuracy and class IoU.
 
-## Create the logits cache
+## Create the CCDM logits cache
 
 Set `source.checkpoint` to the Stage 1 checkpoint, then run:
 
@@ -95,7 +101,7 @@ uv run python src/cache_source_logits.py \
   --config configs/dfm_cityscapes.yaml --splits train val
 ```
 
-`source_cache.dtype` supports `float16`, `bf16`, and `float32`; `overwrite` and SHA/count verification are configurable. Float16 cache comparison naturally requires a quantization tolerance.
+`source_cache.dtype` supports `float16`, `bf16`, and `float32`; `overwrite` and SHA/count verification are configurable. Float16 cache comparison naturally requires a quantization tolerance. MMSeg online and uniform runs do not create or request a cache.
 
 ## Stage 2: DFM training
 
@@ -110,7 +116,7 @@ uv run torchrun --standalone --nproc_per_node=2 src/train_dfm.py \
   --config configs/dfm_cityscapes.yaml
 ```
 
-The iteration is:
+For CCDM conditioned, the iteration is:
 
 ```text
 (image, z1, cached_logits)
@@ -122,13 +128,24 @@ The iteration is:
  -> CrossEntropy(logits,z1)
 ```
 
-`train_dfm` has no construction or invocation of the source model. Uniform runs require no `source`, checkpoint, cache, or Stage 1 at all. Image-conditioned runs use only cached logits; consequently SegFormer consumes neither Stage 2 VRAM nor per-iteration compute.
+For MMSeg conditioned, the iteration is:
+
+```text
+(augmented_image, z1)
+ -> frozen_source_logits = mu(augmented_image)  [inference mode]
+ -> p0 = (1-lambda) softmax(frozen_source_logits/T) + lambda/K
+ -> z0 ~ Cat(p0)
+ -> zt ~ path(. | z0,z1,t)
+ -> DFM forward/backward
+```
+
+The temporary source logits are released before the DFM forward/backward. Uniform runs require no `source`, checkpoint, cache, or Stage 1 at all.
 
 Conditional validation reconstructs `z1` from a `zt` that was built using GT and reports conditional loss/mIoU/pixel accuracy. Generative validation starts only from sampled `z0`, never uses GT in generation, and reports generative mIoU/pixel accuracy/class IoU. It runs at its own configurable interval and fixed seed. Checkpoints are `last.pt`, `best_conditional.pt`, and `best_generative.pt`; by default `best.pt` mirrors a new best generative mIoU and is not updated on epochs/iterations without generative validation.
 
 Learning-rate schedules are YAML-controlled cosine or polynomial decay with optional update-based linear warmup. Both epoch and iteration runners are supported.
 
-Standalone evaluation is generative by default for two-term and three-term paths. Pass `--fixed-t` only for conditional reconstruction diagnostics:
+Standalone evaluation is generative by default for two-term and three-term paths. Generative validation, `best_generative.pt` selection, and final evaluation use 20 steps by default; `--generative-steps` remains available as an override. Pass `--fixed-t` only for conditional reconstruction diagnostics:
 
 ```bash
 uv run python src/evaluate.py --config configs/dfm_cityscapes.yaml \
@@ -180,11 +197,10 @@ uv run python src/train_source.py --config configs/source_pretrain_cityscapes_cc
 uv run python src/train_source.py --config configs/source_pretrain_cityscapes_mmseg.yaml
 ```
 
-Create the conditioned cache (choose the matching conditioned config):
+Create the CCDM conditioned cache:
 
 ```bash
 uv run python src/cache_source_logits.py --config configs/dfm_cityscapes_ccdm_conditioned.yaml --splits train val
-uv run python src/cache_source_logits.py --config configs/dfm_cityscapes_mmseg_conditioned.yaml --splits train val
 ```
 
 Stage 2 four-way ablation:

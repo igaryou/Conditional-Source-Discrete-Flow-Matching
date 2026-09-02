@@ -44,7 +44,10 @@ def validate_config(cfg: dict[str, Any]) -> None:
     pipeline = dataset.get("pipeline", "ccdm_fixed")
     if pipeline not in {"ccdm_fixed", "mmseg"}: raise ValueError("dataset.pipeline must be ccdm_fixed or mmseg")
     conditioned = dist.get("type", "image_conditioned") == "image_conditioned"
-    if conditioned:
+    is_stage2 = cfg.get("training", {}).get("stage") == "dfm"
+    if is_stage2:
+        validate_stage2_source_runtime(cfg)
+    if is_stage2 and conditioned and cfg.get("source_runtime", {}).get("mode") == "cache":
         if pipeline == "ccdm_fixed": photo = bool(dataset.get("augmentation", {}).get("photometric", False))
         else: photo = bool(dataset.get("train_pipeline", {}).get("photometric", {}).get("enabled", False))
         if photo: raise ValueError("photometric augmentation is incompatible with cached image-conditioned logits")
@@ -53,6 +56,33 @@ def validate_config(cfg: dict[str, Any]) -> None:
     sched = cfg.get("scheduler", {"type": "cosine"})
     if sched.get("type", "cosine") not in {"cosine", "poly"}: raise ValueError("scheduler.type must be cosine or poly")
     if float(sched.get("power", 1)) <= 0: raise ValueError("scheduler.power must be > 0")
+
+
+def validate_stage2_source_runtime(cfg: dict[str, Any]) -> None:
+    """Validate the standard Stage-2 source/runtime protocol.
+
+    Keeping this separate makes it straightforward to add research-only runtime
+    policies later without coupling them to the source distribution itself.
+    """
+    source_type = cfg.get("source_distribution", {}).get("type", "image_conditioned")
+    pipeline = cfg.get("dataset", {}).get("pipeline", "ccdm_fixed")
+    mode = cfg.get("source_runtime", {}).get("mode")
+    if source_type == "uniform":
+        if mode != "none":
+            raise ValueError("uniform source requires source_runtime.mode=none")
+        if cfg.get("source_cache", {}).get("enabled", False):
+            raise ValueError("uniform source must not enable source_cache")
+        return
+    required = {"ccdm_fixed": "cache", "mmseg": "online"}[pipeline]
+    if mode != required:
+        raise ValueError(
+            f"image_conditioned + {pipeline} requires source_runtime.mode={required}"
+        )
+    cache_enabled = bool(cfg.get("source_cache", {}).get("enabled", False))
+    if required == "cache" and not cache_enabled:
+        raise ValueError("conditioned cache runtime requires source_cache.enabled=true")
+    if required == "online" and cache_enabled:
+        raise ValueError("conditioned online runtime must not enable source_cache")
 
 
 def save_config(cfg: dict[str, Any], path: str | Path) -> None:

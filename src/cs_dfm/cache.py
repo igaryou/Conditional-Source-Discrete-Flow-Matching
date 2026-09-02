@@ -19,6 +19,8 @@ DTYPES = {"float16": torch.float16, "bf16": torch.bfloat16, "float32": torch.flo
 def create_source_cache(cfg: dict, splits=("train", "val"), device: torch.device | None = None) -> dict:
     if cfg.get("source_distribution", {}).get("type") == "uniform":
         raise ValueError("uniform source does not need a source-logits cache")
+    if cfg.get("source_runtime", {}).get("mode") != "cache":
+        raise ValueError("source-logits cache creation requires source_runtime.mode=cache")
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cache_cfg = cfg["source_cache"]; root = cache_directory(cfg); root.mkdir(parents=True, exist_ok=True)
     model = build_source_model(cfg); load_source_checkpoint(model, cfg["source"]["checkpoint"])
@@ -72,4 +74,3 @@ def verify_cache(cfg: dict, split: str) -> None:
         if payload.get("sample_id",sid) != sid: raise RuntimeError(f"cache sample ID mismatch: {sid}")
         if value is None or tuple(value.shape) != expected_shape: raise RuntimeError(f"cache logits shape mismatch: {sid}")
         if value.dtype != expected_dtype: raise RuntimeError(f"cache dtype mismatch: {sid}: {value.dtype}")
-

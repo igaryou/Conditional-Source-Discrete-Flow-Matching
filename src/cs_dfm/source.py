@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import SegformerConfig, SegformerForSemanticSegmentation, SegformerModel
+
+from .flow.sampling import sample_source
+from .utils import amp_context
 
 
 BACKBONE_NAMES = {f"b{i}": f"nvidia/mit-b{i}" for i in range(6)}
@@ -64,3 +69,60 @@ def load_source_checkpoint(model: nn.Module, path: str, map_location="cpu") -> d
     model.load_state_dict(ckpt.get("model", ckpt))
     return ckpt
 
+
+class Stage2SourceProvider:
+    """Provide samples from uniform, cached, or frozen-online source logits."""
+
+    def __init__(self, cfg: dict, device: torch.device, mode: str, model: nn.Module | None = None):
+        self.cfg, self.device, self.mode, self.model = cfg, device, mode, model
+
+    @property
+    def needs_cache(self) -> bool:
+        return self.mode == "cache"
+
+    def sample(self, batch: dict, image: torch.Tensor, shape: tuple[int, int, int],
+               generator: torch.Generator | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        d = self.cfg["source_distribution"]
+        source_logits = None
+        if self.mode == "cache":
+            source_logits = batch.get("source_logits")
+            if source_logits is None:
+                raise ValueError("cached source runtime requires batch['source_logits']")
+            source_logits = source_logits.to(self.device)
+        elif self.mode == "online":
+            if self.model is None:
+                raise RuntimeError("online source runtime has no source model")
+            runtime = self.cfg.get("runtime", {})
+            with torch.inference_mode():
+                with amp_context(bool(runtime.get("amp", False)), runtime.get("amp_dtype", "bf16"), self.device):
+                    source_logits = self.model(image)
+        elif self.mode != "none":
+            raise ValueError(f"unknown source runtime mode: {self.mode}")
+        result = sample_source(
+            d["type"], int(self.cfg["dataset"]["num_classes"]), shape, self.device,
+            source_logits, float(d.get("lambda", 0)), float(d.get("temperature", 1)), generator,
+        )
+        source_logits = None
+        return result
+
+
+def build_stage2_source_provider(cfg: dict, device: torch.device) -> Stage2SourceProvider:
+    source_type = cfg["source_distribution"]["type"]
+    mode = cfg.get("source_runtime", {}).get("mode")
+    if source_type == "uniform":
+        if mode != "none":
+            raise ValueError("uniform source requires source_runtime.mode=none")
+        return Stage2SourceProvider(cfg, device, mode="none")
+    if mode == "cache":
+        return Stage2SourceProvider(cfg, device, mode="cache")
+    if mode != "online":
+        raise ValueError("image-conditioned source runtime must be cache or online")
+    checkpoint = cfg.get("source", {}).get("checkpoint")
+    if not checkpoint:
+        raise ValueError("MMSeg online conditioned Stage 2 requires source.checkpoint")
+    if not Path(checkpoint).expanduser().is_file():
+        raise FileNotFoundError(f"MMSeg online source checkpoint does not exist: {checkpoint}")
+    model = build_source_model(cfg)
+    load_source_checkpoint(model, checkpoint, map_location="cpu")
+    model.eval().requires_grad_(False).to(device)
+    return Stage2SourceProvider(cfg, device, mode="online", model=model)

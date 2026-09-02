@@ -14,6 +14,10 @@ def test_configs_parse():
                  "dfm_cityscapes_mmseg_conditioned.yaml","dfm_cityscapes_mmseg_uniform.yaml",
                  "source_pretrain_cityscapes_ccdm.yaml","source_pretrain_cityscapes_mmseg.yaml"]:
         assert load_config(root/"configs"/name)["dataset"]["pipeline"] in {"ccdm_fixed","mmseg"}
+    for path in root.joinpath("configs").glob("dfm_*.yaml"):
+        cfg = load_config(path)
+        assert cfg["validation"]["generative_steps"] == 20
+        assert cfg["evaluation"]["generative_steps"] == 20
 
 
 def test_path_visualization_smoke(tmp_path):
