@@ -56,9 +56,13 @@ def test_stage1_paramwise_optimizer_is_complete_disjoint_and_scaled():
     assert {id(parameter) for parameter in grouped} == {id(parameter) for parameter in trainable}
     assert groups["decode_head"]["lr"] == pytest.approx(6e-4)
     assert groups["decode_head_norm_no_decay"]["lr"] == pytest.approx(6e-4)
-    assert groups["norm_no_decay"]["weight_decay"] == 0
-    assert groups["positional_no_decay"]["weight_decay"] == 0
+    assert groups["backbone_norm_no_decay"]["weight_decay"] == 0
     assert groups["backbone"]["weight_decay"] == pytest.approx(0.01)
+    dwconv = next(name for name in groups["backbone"]["parameter_names"] if name.endswith("mlp.dwconv.dwconv.weight"))
+    assert dwconv.startswith("model.segformer.")
+    assert any("layer_norm" in name for name in groups["backbone_norm_no_decay"]["parameter_names"])
+    assert "model.decode_head.classifier.weight" in groups["decode_head"]["parameter_names"]
+    assert "model.decode_head.batch_norm.weight" in groups["decode_head_norm_no_decay"]["parameter_names"]
     cfg["optimizer"]["paramwise"]["enabled"] = False
     assert len(build_optimizer(cfg, model).param_groups) == 1
     cfg["optimizer"]["paramwise"]["enabled"] = True
@@ -85,14 +89,25 @@ def test_stage_budgets_scheduler_points_and_mmseg_parity():
     conditioned = load_config(root / "configs/dfm_cityscapes_mmseg_conditioned.yaml")
     uniform = load_config(root / "configs/dfm_cityscapes_mmseg_uniform.yaml")
     assert stage1["training"]["max_iters"] == 32000
-    assert conditioned["training"]["max_iters"] == uniform["training"]["max_iters"] == 128000
+    assert conditioned["training"]["max_iters"] == 128000
+    assert uniform["training"]["max_iters"] == 160000
     assert stage1["training"]["val_interval"] == 4000
     assert stage1["dataset"]["train_pipeline"] == conditioned["dataset"]["train_pipeline"]
     assert conditioned["validation"] == uniform["validation"]
-    for key in ("dataset", "flow", "model", "training", "scheduler", "validation", "evaluation", "runtime", "distributed"):
+    for key in ("dataset", "flow", "model", "scheduler", "validation", "evaluation", "runtime", "distributed"):
         assert conditioned[key] == uniform[key]
+    assert {key: value for key, value in conditioned["training"].items() if key != "max_iters"} == {
+        key: value for key, value in uniform["training"].items() if key != "max_iters"
+    }
     assert conditioned["validation"]["generative_steps"] == conditioned["evaluation"]["generative_steps"] == 20
-    assert stage1["training_budget"] == conditioned["training_budget"] == uniform["training_budget"]
+    assert stage1["training_budget"] == conditioned["training_budget"] == {
+        "stage1_source_pretraining_updates": 32000, "stage2_dfm_updates": 128000,
+        "total_updates": 160000, "scope": "proposal_wide",
+    }
+    assert uniform["training_budget"] == {
+        "stage1_source_pretraining_updates": 0, "stage2_dfm_updates": 160000,
+        "total_updates": 160000, "scope": "proposal_wide",
+    }
 
     model = SourceSegFormer("b1", 20, "random")
     optimizer = build_optimizer(stage1, model)
@@ -108,5 +123,11 @@ def test_stage_budgets_scheduler_points_and_mmseg_parity():
         assert head_lr == pytest.approx(backbone_lr * 10)
     assert sampled[32000] == 0
     assert abs(sampled[1500] - sampled[1499]) < stage1["training"]["lr"] * 0.001
-    stage2_scheduler = ConfigLRScheduler(torch.optim.SGD([torch.nn.Parameter(torch.tensor(1.))], lr=1.), conditioned["scheduler"], conditioned["training"]["max_iters"])
-    assert stage2_scheduler.total_updates == 128000
+    for cfg, total in ((conditioned, 128000), (uniform, 160000)):
+        stage2_scheduler = ConfigLRScheduler(
+            torch.optim.SGD([torch.nn.Parameter(torch.tensor(1.))], lr=1.),
+            cfg["scheduler"], cfg["training"]["max_iters"],
+        )
+        assert stage2_scheduler.total_updates == total
+        stage2_scheduler.update = total; stage2_scheduler._apply()
+        assert stage2_scheduler.optimizer.param_groups[0]["lr"] == cfg["scheduler"]["eta_min"]

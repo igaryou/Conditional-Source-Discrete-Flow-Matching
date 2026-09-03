@@ -56,7 +56,7 @@ def validate_config(cfg: dict[str, Any]) -> None:
     optimizer = cfg.get("optimizer", {})
     if optimizer.get("type", "adamw").lower() != "adamw": raise ValueError("optimizer.type must be adamw")
     paramwise = optimizer.get("paramwise", {})
-    for key in ("norm_decay_mult", "positional_decay_mult", "decode_head_lr_mult"):
+    for key in ("norm_decay_mult", "decode_head_lr_mult"):
         if float(paramwise.get(key, 0.0 if key != "decode_head_lr_mult" else 10.0)) < 0:
             raise ValueError(f"optimizer.paramwise.{key} must be non-negative")
     sched = cfg.get("scheduler", {"type": "cosine"})

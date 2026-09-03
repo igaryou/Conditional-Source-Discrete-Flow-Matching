@@ -80,7 +80,7 @@ Implementation: `src/cs_dfm/flow/paths.py` and `schedulers.py`.
 
 `b0` through `b5` are configurable. `initialization: mit_imagenet` loads only `nvidia/mit-b*`; `initialization: random` initializes backbone and head randomly.
 
-The main MMSeg experiment allocates a proposal-wide budget of 160k updates as Stage 1 source pretraining 32k + Stage 2 DFM 128k. This is a two-model budget allocation, not the same as an MMSegmentation official 160k single-model training run. The Stage 1 optimizer uses base AdamW LR `6e-5` and weight decay `0.01`, zero decay for normalization and MiT Mix-FFN positional depthwise-convolution parameters, and a `10x` LR for the randomly initialized decode head. Set `optimizer.paramwise.enabled: false` to recover a single AdamW parameter group.
+The main MMSeg comparison allocates 160k training updates to each proposal: the uniform baseline uses 160k DFM updates with no source pretraining, while Conditional Source uses 32k source-pretraining updates plus 128k DFM updates. These are equal allocated update counts, not equal FLOPs or wall-clock cost: Conditional Stage 2 additionally runs a frozen SegFormer-B1 online forward at every iteration. The Stage 1 optimizer uses base AdamW LR `6e-5` and weight decay `0.01`, zero decay for normalization parameters, and a `10x` LR for the randomly initialized decode head. MiT Mix-FFN DWConv parameters remain ordinary backbone parameters with weight decay `0.01`. Set `optimizer.paramwise.enabled: false` to recover a single AdamW parameter group.
 
 ```bash
 cd /home/igarashi_25/CS-DFM
@@ -149,7 +149,7 @@ Conditional validation reconstructs `z1` from a `zt` that was built using GT and
 
 Learning-rate schedules are YAML-controlled cosine or polynomial decay with optional update-based linear warmup. Both epoch and iteration runners are supported.
 
-For the MMSeg comparison, conditioned and uniform Stage 2 both run 128k updates with identical model, optimizer, schedule, warmup, augmentation, seed, linear two-term path, validation schedule, and 20-step generation. The conditioned run alone performs the frozen online B1 source forward from `outputs/source_mmseg/best.pt`; the uniform run uses `p0=1/K`.
+For the MMSeg comparison, the uniform baseline runs 160k DFM updates; Conditional Source runs 32k source pretraining plus 128k DFM updates. Their Stage 2 dataset, model, optimizer settings, warmup, scheduler type, augmentation, seed, linear two-term path, validation protocol, and 20-step generation are identical; only the Stage 2 schedule length differs. Uniform uses `p0=1/K`. Conditional uses `p0(z0^i|x)=(1-lambda) softmax(mu_B1(x)_i/T)+lambda/K` and performs the frozen online B1 source forward from `outputs/source_mmseg/best.pt`. Context-weighted, power, and three-term paths are not used in this main comparison.
 
 Standalone evaluation is generative by default for two-term and three-term paths. Generative validation, `best_generative.pt` selection, and final evaluation use 20 steps by default; `--generative-steps` remains available as an override. Pass `--fixed-t` only for conditional reconstruction diagnostics:
 

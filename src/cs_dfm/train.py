@@ -71,35 +71,25 @@ def build_optimizer(cfg: dict, model: nn.Module) -> torch.optim.AdamW:
         return torch.optim.AdamW(model.parameters(), lr=base_lr, weight_decay=base_decay)
 
     norm_decay = base_decay * float(paramwise.get("norm_decay_mult", 0.0))
-    positional_decay = base_decay * float(paramwise.get("positional_decay_mult", 0.0))
     head_lr = base_lr * float(paramwise.get("decode_head_lr_mult", 10.0))
     norm_ids = _normalization_parameter_ids(model)
     buckets: dict[str, list[nn.Parameter]] = {
         "backbone": [],
-        "norm_no_decay": [],
-        "positional_no_decay": [],
+        "backbone_norm_no_decay": [],
         "decode_head": [],
         "decode_head_norm_no_decay": [],
-        "decode_head_positional_no_decay": [],
     }
     names: dict[str, list[str]] = {key: [] for key in buckets}
     trainable = [(name, parameter) for name, parameter in model.named_parameters() if parameter.requires_grad]
     for name, parameter in trainable:
         is_head = name.startswith("model.decode_head.")
         is_norm = id(parameter) in norm_ids
-        # SegFormer has no learned absolute position embedding. Its Mix-FFN
-        # depthwise convolution supplies the positional signal (MMSeg pos_block).
-        is_positional = ".dwconv.dwconv." in name
         if is_head and is_norm:
             bucket = "decode_head_norm_no_decay"
-        elif is_head and is_positional:
-            bucket = "decode_head_positional_no_decay"
         elif is_head:
             bucket = "decode_head"
         elif is_norm:
-            bucket = "norm_no_decay"
-        elif is_positional:
-            bucket = "positional_no_decay"
+            bucket = "backbone_norm_no_decay"
         else:
             bucket = "backbone"
         buckets[bucket].append(parameter)
@@ -107,11 +97,9 @@ def build_optimizer(cfg: dict, model: nn.Module) -> torch.optim.AdamW:
 
     settings = {
         "backbone": (base_lr, base_decay),
-        "norm_no_decay": (base_lr, norm_decay),
-        "positional_no_decay": (base_lr, positional_decay),
+        "backbone_norm_no_decay": (base_lr, norm_decay),
         "decode_head": (head_lr, base_decay),
         "decode_head_norm_no_decay": (head_lr, norm_decay),
-        "decode_head_positional_no_decay": (head_lr, positional_decay),
     }
     groups = [
         {"params": parameters, "lr": settings[key][0], "weight_decay": settings[key][1],
@@ -137,26 +125,6 @@ def optimizer_group_summary(optimizer: torch.optim.Optimizer) -> list[dict]:
         }
         for group in optimizer.param_groups
     ]
-
-
-def optimizer_classification_summary(optimizer: torch.optim.Optimizer) -> dict[str, dict[str, int]]:
-    categories = {
-        "backbone_normal": ("backbone",),
-        "normalization_no_decay": ("norm_no_decay", "decode_head_norm_no_decay"),
-        "positional_special_no_decay": ("positional_no_decay", "decode_head_positional_no_decay"),
-        "decode_head": ("decode_head", "decode_head_norm_no_decay", "decode_head_positional_no_decay"),
-    }
-    result = {}
-    for category, names in categories.items():
-        parameters = [
-            parameter for group in optimizer.param_groups if group.get("group_name") in names
-            for parameter in group["params"]
-        ]
-        result[category] = {
-            "parameter_tensors": len(parameters),
-            "parameter_elements": sum(parameter.numel() for parameter in parameters),
-        }
-    return result
 
 
 def _runtime(cfg,model,device):
@@ -212,10 +180,7 @@ def train_source(cfg):
     device=_device(local); seed_everything(int(cfg["experiment"].get("seed",42))+rank); out=Path(cfg["experiment"]["output_dir"]); out.mkdir(parents=True,exist_ok=True)
     model=build_source_model(cfg).to(device); optimizer,scheduler,scaler=_runtime(cfg,model,device); start=0; best=-1.
     if is_main_process():
-        print(json.dumps({
-            "optimizer_parameter_groups": optimizer_group_summary(optimizer),
-            "optimizer_parameter_classification": optimizer_classification_summary(optimizer),
-        }))
+        print(json.dumps({"optimizer_parameter_groups": optimizer_group_summary(optimizer)}))
     if cfg["training"].get("resume"):
         ck=resume_checkpoint(cfg["training"]["resume"],model,optimizer,scheduler,scaler,device); start=ck["epoch"]+1; best=ck.get("best_metric",best)
     if world>1:model=DDP(model,device_ids=[local] if device.type=="cuda" else None)
