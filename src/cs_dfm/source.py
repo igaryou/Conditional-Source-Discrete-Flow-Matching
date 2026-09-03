@@ -12,20 +12,41 @@ from .utils import amp_context
 
 
 BACKBONE_NAMES = {f"b{i}": f"nvidia/mit-b{i}" for i in range(6)}
-DEPTHS = {"b0": [2, 2, 2, 2], "b1": [2, 2, 2, 2], "b2": [3, 4, 6, 3],
-          "b3": [3, 4, 18, 3], "b4": [3, 8, 27, 3], "b5": [3, 6, 40, 3]}
+HIDDEN_SIZES = {
+    "b0": [32, 64, 160, 256],
+    "b1": [64, 128, 320, 512],
+    "b2": [64, 128, 320, 512],
+    "b3": [64, 128, 320, 512],
+    "b4": [64, 128, 320, 512],
+    "b5": [64, 128, 320, 512],
+}
+DEPTHS = {
+    "b0": [2, 2, 2, 2],
+    "b1": [2, 2, 2, 2],
+    "b2": [3, 4, 6, 3],
+    "b3": [3, 4, 18, 3],
+    "b4": [3, 8, 27, 3],
+    "b5": [3, 6, 40, 3],
+}
+DECODER_HIDDEN_SIZES = {
+    "b0": 256,
+    "b1": 256,
+    "b2": 768,
+    "b3": 768,
+    "b4": 768,
+    "b5": 768,
+}
 
 
 def segformer_config(variant: str, num_classes: int) -> SegformerConfig:
     if variant not in BACKBONE_NAMES:
         raise ValueError("variant must be b0..b5")
-    large = variant != "b0"
     return SegformerConfig(
         num_labels=num_classes,
-        hidden_sizes=[64, 128, 320, 512] if large else [32, 64, 160, 256],
+        hidden_sizes=HIDDEN_SIZES[variant],
         depths=DEPTHS[variant], num_attention_heads=[1, 2, 5, 8],
         sr_ratios=[8, 4, 2, 1], patch_sizes=[7, 3, 3, 3], strides=[4, 2, 2, 2],
-        decoder_hidden_size=768 if large else 256,
+        decoder_hidden_size=DECODER_HIDDEN_SIZES[variant],
     )
 
 

@@ -53,6 +53,12 @@ def validate_config(cfg: dict[str, Any]) -> None:
         if photo: raise ValueError("photometric augmentation is incompatible with cached image-conditioned logits")
     training = cfg.get("training", {})
     if training.get("runner", "epoch") not in {"epoch", "iter"}: raise ValueError("training.runner must be epoch or iter")
+    optimizer = cfg.get("optimizer", {})
+    if optimizer.get("type", "adamw").lower() != "adamw": raise ValueError("optimizer.type must be adamw")
+    paramwise = optimizer.get("paramwise", {})
+    for key in ("norm_decay_mult", "positional_decay_mult", "decode_head_lr_mult"):
+        if float(paramwise.get(key, 0.0 if key != "decode_head_lr_mult" else 10.0)) < 0:
+            raise ValueError(f"optimizer.paramwise.{key} must be non-negative")
     sched = cfg.get("scheduler", {"type": "cosine"})
     if sched.get("type", "cosine") not in {"cosine", "poly"}: raise ValueError("scheduler.type must be cosine or poly")
     if float(sched.get("power", 1)) <= 0: raise ValueError("scheduler.power must be > 0")

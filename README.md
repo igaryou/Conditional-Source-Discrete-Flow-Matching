@@ -25,6 +25,8 @@ Implementation: `src/cs_dfm/flow/sampling.py`.
 
 Stage 1 uses `SegformerModel.from_pretrained("nvidia/mit-b0" ... "nvidia/mit-b5")` for the ImageNet-pretrained MiT backbone only. A fresh `SegformerForSemanticSegmentation` decode/classification head is created for Cityscapes. ADE20K-finetuned segmentation checkpoints are never loaded. Set `source.initialization: random` for fully random initialization; legacy `pretrained` is still interpreted when `initialization` is absent.
 
+The standard MiT widths/depths and SegFormer decoder widths are used: B0 `[32,64,160,256] / [2,2,2,2] / 256`; B1 `[64,128,320,512] / [2,2,2,2] / 256`; B2 `[64,128,320,512] / [3,4,6,3] / 768`; B3 `[64,128,320,512] / [3,4,18,3] / 768`; B4 `[64,128,320,512] / [3,8,27,3] / 768`; and B5 `[64,128,320,512] / [3,6,40,3] / 768` (widths / depths / decoder hidden size).
+
 ## Dataset and Stage 2 source runtime
 
 The Cityscapes mapping intentionally matches the existing DFM code: the standard 19 semantic classes map to IDs 0–18 and all void IDs map to class 19. For CCDM, images, masks, and cached logits use the same deterministic canonical `[H,W]` resize. The cache stores one `<city>__<image_stem>.pt` per sample:
@@ -78,19 +80,21 @@ Implementation: `src/cs_dfm/flow/paths.py` and `schedulers.py`.
 
 `b0` through `b5` are configurable. `initialization: mit_imagenet` loads only `nvidia/mit-b*`; `initialization: random` initializes backbone and head randomly.
 
+The main MMSeg experiment allocates a proposal-wide budget of 160k updates as Stage 1 source pretraining 32k + Stage 2 DFM 128k. This is a two-model budget allocation, not the same as an MMSegmentation official 160k single-model training run. The Stage 1 optimizer uses base AdamW LR `6e-5` and weight decay `0.01`, zero decay for normalization and MiT Mix-FFN positional depthwise-convolution parameters, and a `10x` LR for the randomly initialized decode head. Set `optimizer.paramwise.enabled: false` to recover a single AdamW parameter group.
+
 ```bash
 cd /home/igarashi_25/CS-DFM
-uv run python src/train_source.py --config configs/source_pretrain_cityscapes_ccdm.yaml
+uv run python src/train_source.py --config configs/source_pretrain_cityscapes_mmseg.yaml
 ```
 
 For multi-GPU DDP:
 
 ```bash
 uv run torchrun --standalone --nproc_per_node=2 src/train_source.py \
-  --config configs/source_pretrain_cityscapes_ccdm.yaml
+  --config configs/source_pretrain_cityscapes_mmseg.yaml
 ```
 
-Checkpoints contain model, optimizer, cosine scheduler, AMP scaler, epoch, best metric, and full config. Set `training.resume` to `last.pt` to resume. `best.pt` is selected by validation mIoU. Validation also reports pixel accuracy and class IoU.
+Checkpoints contain model, optimizer, configured LR scheduler, AMP scaler, epoch/update, best metric, and the full config (including the proposal-wide budget metadata). Set `training.resume` to `last.pt` to resume. `best.pt` is selected by validation mIoU. Validation also reports pixel accuracy and class IoU.
 
 ## Create the CCDM logits cache
 
@@ -145,11 +149,13 @@ Conditional validation reconstructs `z1` from a `zt` that was built using GT and
 
 Learning-rate schedules are YAML-controlled cosine or polynomial decay with optional update-based linear warmup. Both epoch and iteration runners are supported.
 
+For the MMSeg comparison, conditioned and uniform Stage 2 both run 128k updates with identical model, optimizer, schedule, warmup, augmentation, seed, linear two-term path, validation schedule, and 20-step generation. The conditioned run alone performs the frozen online B1 source forward from `outputs/source_mmseg/best.pt`; the uniform run uses `p0=1/K`.
+
 Standalone evaluation is generative by default for two-term and three-term paths. Generative validation, `best_generative.pt` selection, and final evaluation use 20 steps by default; `--generative-steps` remains available as an override. Pass `--fixed-t` only for conditional reconstruction diagnostics:
 
 ```bash
-uv run python src/evaluate.py --config configs/dfm_cityscapes.yaml \
-  --checkpoint outputs/cs_dfm/best.pt --output outputs/cs_dfm/eval
+uv run python src/evaluate.py --config configs/dfm_cityscapes_mmseg_conditioned.yaml \
+  --checkpoint outputs/mmseg_conditioned/best.pt --output outputs/mmseg_conditioned/eval
 ```
 
 ## Source diagnostics and λ × T sweep

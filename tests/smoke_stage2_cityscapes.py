@@ -30,7 +30,7 @@ def base_cfg(root: str, checkpoint: str) -> dict:
             "augmentation": {"random_resize": False, "random_crop": False,
                              "horizontal_flip": 0.0, "photometric": False},
         },
-        "source": {"architecture": "segformer", "variant": "b0",
+        "source": {"architecture": "segformer", "variant": "b1",
                    "initialization": "random", "checkpoint": checkpoint},
         "source_distribution": {"type": "image_conditioned", "lambda": 0.2,
                                 "temperature": 2.0, "sampling": "categorical"},
